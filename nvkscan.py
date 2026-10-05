@@ -1199,28 +1199,83 @@ def module_web(domain, url, active, log, findings, workdir, wordlist_override=No
     # retries=1 em cada uma: um timeout aqui costuma ser transitorio (rede,
     # DNS, servidor devagar na hora), nao motivo pra ficar sem a informacao
     # pro resto da execucao -- da uma segunda chance antes de desistir
+    def _count_lines(path):
+        try:
+            return sum(1 for ln in path.open(encoding="utf-8", errors="ignore") if ln.strip())
+        except Exception:
+            return 0
+
     recon_tasks = []
     if require_tool("subfinder", log) and require_tool("httpx", log):
-        recon_tasks.append(("subfinder+httpx", lambda: run(
-            f"subfinder -d {domain} -all -silent | httpx -title -tech-detect -status-code -o {recon_dir/'live.txt'}",
-            log, timeout=300, retries=1)))
+        def _subfinder_task():
+            rc, _ = run(
+                f"subfinder -d {domain} -all -silent | httpx -title -tech-detect -status-code -o {recon_dir/'live.txt'}",
+                log, timeout=300, retries=1)
+            n = _count_lines(recon_dir / "live.txt")
+            if n:
+                log.ok(f"  subfinder+httpx: {n} host(s) vivo(s) -> recon/live.txt")
+            else:
+                log.info("  subfinder+httpx: nenhum host vivo encontrado")
+        recon_tasks.append(("subfinder+httpx", _subfinder_task))
     if require_tool("katana", log):
-        recon_tasks.append(("katana", lambda: run(
-            f"katana -u {url} -d 3 -jc -o {recon_dir/'katana.txt'}", log, timeout=300, retries=1)))
+        def _katana_task():
+            rc, _ = run(f"katana -u {url} -d 3 -jc -o {recon_dir/'katana.txt'}", log, timeout=300, retries=1)
+            n = _count_lines(recon_dir / "katana.txt")
+            if n:
+                log.ok(f"  katana: {n} URL(s) crawleada(s) -> recon/katana.txt")
+            else:
+                log.info("  katana: nenhuma URL crawleada")
+        recon_tasks.append(("katana", _katana_task))
     if require_tool("gau", log):
-        recon_tasks.append(("gau", lambda: run(f"gau {domain} --o {recon_dir/'gau.txt'}", log, timeout=240, retries=1)))
+        def _gau_task():
+            rc, _ = run(f"gau {domain} --o {recon_dir/'gau.txt'}", log, timeout=240, retries=1)
+            n = _count_lines(recon_dir / "gau.txt")
+            if n:
+                log.ok(f"  gau: {n} URL(s) historica(s) -> recon/gau.txt")
+            else:
+                log.info("  gau: nenhuma URL historica")
+        recon_tasks.append(("gau", _gau_task))
     if require_tool("waybackurls", log):
         def _waybackurls_task():
             rc, out = run(f"waybackurls {domain}", log, timeout=180, retries=1)
             if out:
                 (recon_dir / "waybackurls.txt").write_text(out, encoding="utf-8")
+            n = _count_lines(recon_dir / "waybackurls.txt")
+            if n:
+                log.ok(f"  waybackurls: {n} URL(s) do Wayback -> recon/waybackurls.txt")
+            else:
+                log.info("  waybackurls: nenhuma URL do Wayback")
         recon_tasks.append(("waybackurls", _waybackurls_task))
     if require_tool("arjun", log):
-        recon_tasks.append(("arjun", lambda: run(
-            f"arjun -u {url} -m GET --stable -oT {recon_dir/'arjun_params.txt'}", log, timeout=180, retries=1)))
+        def _arjun_task():
+            rc, _ = run(f"arjun -u {url} -m GET --stable -oT {recon_dir/'arjun_params.txt'}",
+                        log, timeout=180, retries=1)
+            n = _count_lines(recon_dir / "arjun_params.txt")
+            if n:
+                log.ok(f"  arjun: {n} parametro(s) oculto(s) descoberto(s) -> recon/arjun_params.txt")
+            else:
+                log.info("  arjun: nenhum parametro oculto descoberto")
+        recon_tasks.append(("arjun", _arjun_task))
     if require_tool("wafw00f", log):
-        recon_tasks.append(("wafw00f", lambda: run(
-            f"wafw00f -a {url}", log, outfile=recon_dir / "wafw00f.txt", timeout=60, retries=1)))
+        def _wafw00f_task():
+            rc, out = run(f"wafw00f -a {url}", log, outfile=recon_dir / "wafw00f.txt",
+                          timeout=60, retries=1)
+            # wafw00f colore a saida; tira os codigos ANSI pra o nome do WAF
+            # sair limpo no log (senao aparece "[1;96mCloudflare[0m")
+            out = re.sub(r"\x1b\[[0-9;]*m", "", out)
+            waf = None
+            for ln in out.splitlines():
+                m = re.search(r"is behind\s+(.+?)\s+WAF", ln)
+                if m:
+                    waf = m.group(1).strip()
+                    break
+            if waf:
+                log.warn(f"  wafw00f: WAF detectado -> {waf} (ajuste payloads/throttle pra esse WAF)")
+            elif re.search(r"No WAF detected", out, re.I):
+                log.ok("  wafw00f: nenhum WAF detectado (generico)")
+            else:
+                log.info("  wafw00f: resultado inconclusivo, ver recon/wafw00f.txt")
+        recon_tasks.append(("wafw00f", _wafw00f_task))
 
     if recon_tasks:
         total_tasks = len(recon_tasks)
