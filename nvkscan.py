@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-pentest_toolkit.py -- orquestrador unico, com todos os modulos do
+nvkscan.py -- orquestrador unico, com todos os modulos do
 pentest_metodologia.html integrados, com opcao de selecionar o que rodar.
 
 NAO e publicado no GitHub (fica de fora do repo via .gitignore) -- uso local.
 
 USO INTERATIVO (menu pra escolher o modulo):
-    python3 pentest_toolkit.py
+    python3 nvkscan.py
 
 USO DIRETO (scriptavel):
-    python3 pentest_toolkit.py --module web       -d alvo.com -u https://alvo.com --active
-    python3 pentest_toolkit.py --module bugbounty -d alvo.com --program nome-do-programa
-    python3 pentest_toolkit.py --module api       -d alvo.com -u https://api.alvo.com --active
-    python3 pentest_toolkit.py --module cloud     --aws-profile default
-    python3 pentest_toolkit.py --module redteam   -d alvo.com
-    python3 pentest_toolkit.py --module mobile    --apk caminho/alvo.apk
-    python3 pentest_toolkit.py --module wireless  --iface wlan0
-    python3 pentest_toolkit.py --module dcpt      -d alvo.com --ip 10.10.10.10
+    python3 nvkscan.py --module web       -d alvo.com -u https://alvo.com --active
+    python3 nvkscan.py --module bugbounty -d alvo.com --program nome-do-programa
+    python3 nvkscan.py --module api       -d alvo.com -u https://api.alvo.com --active
+    python3 nvkscan.py --module cloud     --aws-profile default
+    python3 nvkscan.py --module redteam   -d alvo.com
+    python3 nvkscan.py --module mobile    --apk caminho/alvo.apk
+    python3 nvkscan.py --module wireless  --iface wlan0
+    python3 nvkscan.py --module dcpt      -d alvo.com --ip 10.10.10.10
 
 Principio seguido em TODO modulo (mesmo do Modulo 11 do guia: "scanner e
 ponto de partida, nao veredito"):
@@ -482,7 +482,7 @@ _seclists_root_cache = None
 
 
 def _seclists_cache_file():
-    return Path.home() / ".pentest_toolkit_seclists_path"
+    return Path.home() / ".nvkscan_seclists_path"
 
 
 def find_seclists_root(log: Log):
@@ -1494,7 +1494,7 @@ def module_bugbounty(domain, program, active, log, findings, workdir):
         "o backend confia so no frontend pra bloquear",
         f"M2.8: escrever o relatorio no formato da plataforma (programa: {program or 'definir'})",
         f"Rode esse script periodicamente (cron) pra manter o diff de subdominios atualizado: "
-        f"`0 */6 * * * cd {Path(__file__).resolve().parent} && python3 pentest_toolkit.py "
+        f"`0 */6 * * * cd {Path(__file__).resolve().parent} && python3 nvkscan.py "
         f"--module bugbounty -d {domain} --program \"{program or 'nome'}\" --skip-auth-gate`",
     ]
     return manual_steps
@@ -2129,7 +2129,7 @@ def prompt_yesno(label, default_no=True):
 def fill_missing_args(module, args, interactive):
     """Completa interativamente os parametros que o modulo escolhido precisa
     e que nao vieram via linha de comando -- corrige o caso de rodar so
-    'python3 pentest_toolkit.py' e escolher o modulo pelo menu."""
+    'python3 nvkscan.py' e escolher o modulo pelo menu."""
     if module in ("web", "bugbounty", "redteam", "api") and not args.domain:
         args.domain = prompt("dominio alvo (ex.: alvo.com)")
         if not args.domain:
@@ -2183,7 +2183,7 @@ def fill_missing_args(module, args, interactive):
 
 def main():
     # forca saida linha-a-linha mesmo quando redirecionada pra arquivo/pipe
-    # (ex.: "python3 pentest_toolkit.py ... > scan.log &"), senao o Python
+    # (ex.: "python3 nvkscan.py ... > scan.log &"), senao o Python
     # bufferiza tudo e o log fica mudo ate o processo terminar
     try:
         sys.stdout.reconfigure(line_buffering=True)

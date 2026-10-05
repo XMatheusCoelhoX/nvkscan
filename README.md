@@ -1,4 +1,4 @@
-# pentest_toolkit.py
+# nvkscan.py
 
 Orquestrador único que automatiza a parte de recon/enumeração/detecção da
 metodologia descrita em [pentest-metodologia](https://xmatheuscoelhox.github.io/pentest-metodologia/),
@@ -14,7 +14,7 @@ autorização é crime (Lei 12.737/2012 BR / CFAA EUA / CMA UK).
 ## Onde fica
 
 ```
-~/pentest-toolkit/pentest_toolkit.py
+~/pentest-toolkit/nvkscan.py
 ```
 
 Roda de dentro dessa pasta (ou de qualquer lugar, o script não depende do
@@ -43,7 +43,7 @@ git clone https://github.com/danielmiessler/SecLists ~/SecLists
 ### Modo interativo (menu)
 
 ```bash
-python3 pentest_toolkit.py
+python3 nvkscan.py
 ```
 
 Mostra um menu numerado pra escolher o módulo, e depois pergunta só o que
@@ -53,14 +53,14 @@ se quer habilitar detecção ativa.
 ### Modo direto (scriptável)
 
 ```bash
-python3 pentest_toolkit.py --module web -d alvo.com -u https://alvo.com --active
-python3 pentest_toolkit.py --module bugbounty -d alvo.com --program nome-do-programa
-python3 pentest_toolkit.py --module api -d alvo.com --active
-python3 pentest_toolkit.py --module cloud --provider aws --client "Nome do Cliente" --aws-profile meu-profile
-python3 pentest_toolkit.py --module redteam -d alvo.com
-python3 pentest_toolkit.py --module mobile --apk caminho/alvo.apk
-python3 pentest_toolkit.py --module wireless --iface wlan0
-python3 pentest_toolkit.py --module dcpt --ip 10.10.10.10
+python3 nvkscan.py --module web -d alvo.com -u https://alvo.com --active
+python3 nvkscan.py --module bugbounty -d alvo.com --program nome-do-programa
+python3 nvkscan.py --module api -d alvo.com --active
+python3 nvkscan.py --module cloud --provider aws --client "Nome do Cliente" --aws-profile meu-profile
+python3 nvkscan.py --module redteam -d alvo.com
+python3 nvkscan.py --module mobile --apk caminho/alvo.apk
+python3 nvkscan.py --module wireless --iface wlan0
+python3 nvkscan.py --module dcpt --ip 10.10.10.10
 ```
 
 ### Lote de URLs (vários alvos de uma vez)
@@ -76,7 +76,7 @@ alvo3.com
 ```
 
 ```bash
-python3 pentest_toolkit.py --module web --urls-file lista.txt --active
+python3 nvkscan.py --module web --urls-file lista.txt --active
 ```
 
 A autorização é confirmada **uma vez pro lote inteiro**, não por alvo. Cada
@@ -90,7 +90,7 @@ módulo `web` rodam em paralelo. Por padrão usa 20 requests simultâneos; pra
 ajustar:
 
 ```bash
-python3 pentest_toolkit.py --module web -d alvo.com --threads 40
+python3 nvkscan.py --module web -d alvo.com --threads 40
 ```
 
 ### Wordlist e recursão do ffuf (módulo `web`)
@@ -102,7 +102,7 @@ poucas extensões e profundidade baixa — por isso o default é o conservador,
 não o mais "completo" na teoria.
 
 ```bash
-python3 pentest_toolkit.py --module web -d alvo.com --wordlist-size medium
+python3 nvkscan.py --module web -d alvo.com --wordlist-size medium
 ```
 
 `--recursion-depth` controla a profundidade de recursão do ffuf (default
@@ -111,7 +111,7 @@ wordlist grande não termina dentro do timeout em alvos com muitas pastas
 reais. Use `--recursion-depth 0` pra desativar recursão por completo:
 
 ```bash
-python3 pentest_toolkit.py --module web -d alvo.com --recursion-depth 0
+python3 nvkscan.py --module web -d alvo.com --recursion-depth 0
 ```
 
 Se você já sabe o caminho da wordlist de cabeça (ou quer usar uma diferente
@@ -282,7 +282,7 @@ por exemplo:
 No modo interativo, pergunta qual escolher. No modo direto, use o ID MITRE:
 
 ```bash
-python3 pentest_toolkit.py --module redteam -d alvo.com --apt-group G0046
+python3 nvkscan.py --module redteam -d alvo.com --apt-group G0046
 ```
 
 Aceita qualquer ID de grupo do MITRE ATT&CK, não só os 6 do menu (ex.:
