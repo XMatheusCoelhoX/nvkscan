@@ -1,13 +1,14 @@
 # pentest_toolkit.py
 
 Orquestrador único que automatiza a parte de recon/enumeração/detecção da
-metodologia do `pentest_metodologia.html`, módulo por módulo. Uso pessoal,
-local, **não publicado no GitHub** (está no `.gitignore` do repo).
+metodologia descrita em [pentest-metodologia](https://xmatheuscoelhox.github.io/pentest-metodologia/),
+módulo por módulo. Repositório **privado** — ferramenta ofensiva de verdade,
+só pra quem foi explicitamente convidado aqui.
 
 ## Onde fica
 
 ```
-~/pentest-metodologia/pentest_toolkit.py
+~/pentest-toolkit/pentest_toolkit.py
 ```
 
 Roda de dentro dessa pasta (ou de qualquer lugar, o script não depende do
@@ -313,8 +314,10 @@ como achado; o resto fica registrado como falso positivo descartado.
 └── RESULTADOS.md      (resumo dos achados + próximos passos manuais)
 ```
 
-## Por que isso não vai pro GitHub
+## Sobre a privacidade deste repositório
 
-O `pentest_metodologia.html` é o guia público, de referência. Este script
-executa ferramentas de verdade contra alvos de verdade — é uso pessoal, fica
-só no `.gitignore` local. Nunca roda `git add`/commit nele.
+O guia público (`pentest_metodologia.html`) fica num repositório separado e
+público, só de referência/leitura. Este aqui executa ferramentas de verdade
+contra alvos de verdade, então **fica privado de propósito** — acesso só
+pra quem for explicitamente convidado como colaborador. Nunca torne este
+repositório público.
