@@ -14,7 +14,7 @@ autorização é crime (Lei 12.737/2012 BR / CFAA EUA / CMA UK).
 ## Onde fica
 
 ```
-~/pentest-toolkit/nvkscan.py
+~/nvkscan/nvkscan.py
 ```
 
 Roda de dentro dessa pasta (ou de qualquer lugar, o script não depende do
