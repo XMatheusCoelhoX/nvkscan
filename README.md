@@ -2,8 +2,14 @@
 
 Orquestrador único que automatiza a parte de recon/enumeração/detecção da
 metodologia descrita em [pentest-metodologia](https://xmatheuscoelhox.github.io/pentest-metodologia/),
-módulo por módulo. Repositório **privado** — ferramenta ofensiva de verdade,
-só pra quem foi explicitamente convidado aqui.
+módulo por módulo.
+
+**Aviso:** este script executa ferramentas de exploração de verdade
+(sqlmap, dalfox, mimikatz, kerberoasting, etc.) contra alvos de verdade.
+Rode SOMENTE contra alvos com autorização explícita por escrito (ROE/SOW
+assinado ou programa de bug bounty com o asset em escopo) — o próprio
+script exige digitar `AUTORIZADO <alvo>` antes de qualquer ação. Testar sem
+autorização é crime (Lei 12.737/2012 BR / CFAA EUA / CMA UK).
 
 ## Onde fica
 
@@ -314,10 +320,9 @@ como achado; o resto fica registrado como falso positivo descartado.
 └── RESULTADOS.md      (resumo dos achados + próximos passos manuais)
 ```
 
-## Sobre a privacidade deste repositório
+## Isenção de responsabilidade
 
-O guia público (`pentest_metodologia.html`) fica num repositório separado e
-público, só de referência/leitura. Este aqui executa ferramentas de verdade
-contra alvos de verdade, então **fica privado de propósito** — acesso só
-pra quem for explicitamente convidado como colaborador. Nunca torne este
-repositório público.
+Este script é disponibilizado como está, pra fins educacionais e de
+pentest/bug bounty autorizado. O autor não se responsabiliza por uso
+indevido. Use por sua conta e risco, dentro da lei e só com autorização
+explícita do dono do alvo.
