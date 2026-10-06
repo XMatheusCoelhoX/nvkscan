@@ -310,15 +310,42 @@ como achado; o resto fica registrado como falso positivo descartado.
 
 ## Onde ficam os resultados
 
+Os relatórios ficam numa pasta `RESULTADOS/` **ao lado do próprio script**
+(ex.: `~/nvkscan/RESULTADOS/` ou `/home/<voce>/pentest-metodologia/RESULTADOS/`,
+onde quer que o `nvkscan.py` esteja). É portátil — pra quem clonar, é sempre
+`<pasta_do_script>/RESULTADOS`. Pra forçar outro caminho, use `--outdir`.
+
 ```
-~/pentest/<modulo>/<alvo>/
+<pasta_do_script>/RESULTADOS/<modulo>/<alvo>/
 ├── recon/
 ├── enum/
 ├── exploit/
 ├── evidence/
 ├── session.log       (log completo, com timestamp)
-└── RESULTADOS.md      (resumo dos achados + próximos passos manuais)
+└── RESULTADOS.md      (achados + evidência detalhada + passo a passo manual)
 ```
+
+### O que vem no `RESULTADOS.md`
+
+1. **Tabela de achados sinalizados** — resumo numerado (fase, tipo, detalhe).
+2. **Detalhamento dos achados (evidência)** — pra cada achado, a prova
+   completa pra você comprovar pra gestão/cliente sem refazer o scan: URL
+   exata, status HTTP, content-type, score de confiança + os sinais que o
+   elevaram, e um trecho do corpo da resposta. Pros ativos: a listagem real
+   do bucket S3/GCS, as ocorrências de segredo em JS, a linha bruta do
+   nuclei, o PoC do dalfox (URL que dispara o XSS), o ponto de injeção do
+   sqlmap (tipo + payload).
+3. **Passo a passo manual ("mastigado")** — cada classe que fica manual vem
+   com: *o que você vai confirmar*, *pré-requisitos*, e sub-passos numerados
+   com o **comando pronto** (já com o dado real que o recon achou
+   substituído) e *como ler a saída* pra saber se confirmou. Cobre todos os
+   módulos (login/2FA, SQLi, SSRF, IDOR, upload, BOLA, mass assignment, JWT,
+   AS-REP/Kerberoasting, privesc, frida/objection, wifi handshake, C2, etc.).
+
+Os comandos de confirmação manual usam ferramentas que o script valida que
+estão instaladas e funcionando; a sintaxe está correta e os dados reais já
+vêm substituídos. O que o comando **não** garante é que a vuln exista no
+alvo — isso é justamente o que a confirmação manual prova.
 
 ## Isenção de responsabilidade
 
